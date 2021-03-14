@@ -1,0 +1,115 @@
+```{r}
+
+#' # numerical comparisons between uncontam_l2 and each of the other geodesics
+#' for (j in 2:(length(geodesics))) {
+#'   print(geo_dist('kendall', geodesics[[1]]$p, geodesics[[j]]$p)) # distance
+#'       # between the p hats
+#'   print(magnitude('kendall', geodesics[[1]]$V - par_trans('kendall',
+#'       geodesics[[j]]$p, geodesics[[1]]$p, geodesics[[j]]$V)))
+#'   # distance between the V hats (parallel transported to the same tangent
+#'       # space)
+#' }
+#' # again, contam_l2 performed the worse on the corrupted data, using
+#' # uncontam_l2 as the baseline for comparison
+
+
+
+#' Sum of losses
+#'
+#' Total sum of the losses for a given \code{p} and \code{V}.
+#'
+#' @param manifold Type of manifold (\code{'euclidean'}, \code{'sphere'}, or
+#'   \code{'kendall'}).
+#' @param p A vector on the manifold.
+#' @param V A matrix where each column is a vector in the tangent space at
+#'   \code{p}.
+#' @param x A matrix or data frame of independent variables; for matrices and
+#'   data frames, the rows and columns represent the subjects and independent
+#'   variables, respectively.
+#' @param y A matrix or data frame whose columns represent points on the
+#'   manifold.
+#' @param estimator M-type estimator (\code{'l2'}, \code{'l1'}, \code{'huber'},
+#'   or \code{'tukey'}).
+#' @param c Multiplier of \eqn{\sigma}, the square root of the variance, used in
+#'   the cutoff parameter for the \code{'huber'} and \code{'tukey'} estimators;
+#'   should be \code{NULL} for the \code{'l2'} or \code{'l1'} estimators.
+#' @return The total sum of losses.
+#' @author Ha-Young Shin
+#' @examples
+#' y <- matrix(0L, nrow = 3, ncol = 64)
+#' for (i in 1:64) {
+#'   y[, i] <- exp_map('sphere', c(1, 0, 0), c(0, runif(1), runif(1)))
+#' }
+#' intrinsic_mean <- intrinsic_location('sphere', y, 'l2')
+#' loss_sum('sphere', intrinsic_mean, as.matrix(numeric(4)), as.matrix(numeric(64)), y, 'l2')
+#'
+#' @export
+
+library(shapes)
+
+data(rats)
+boundary_points<-8
+dim <- 2*boundary_points-4
+embed <- boundary_points
+M <- 1024
+estimator <- 'l2'
+l <- 1
+
+library(data.table)
+library(abind)
+
+data <- fread('https://life.bio.sunysb.edu/morph/data/Book-VilmannRat.txt')
+data <- as.matrix(data)
+data <- matrix(data, ncol = ncol(data), dimnames = NULL)
+calvaria <- data
+#data <- data[-c(17:24,97:104,153:160),]
+#uncontam_y <- data
+#contam_y <- data[-c(23,101,104,160),]
+
+ages <- calvaria[,2]
+x_data <- t(t(ages))
+x_data <- x_data - mean(x_data) ## centering
+
+y_data <- abind(calvaria[,c(3,5,7,9,11,13,15,17)],calvaria[,c(4,6,8,10,12,14,16,18)], along = 3)
+y_data <- aperm(y_data, c(3,2,1))
+
+for (i in 1:length(ages)) { ## remove translation
+  for (j in 1:2) {
+    y_data[j,,i] <- y_data[j,,i]-mean(y_data[j,,i])
+  }
+}
+
+for (i in 1:length(ages)) { ## remove scaling
+  y_data[,,i] <- y_data[,,i]/((sum(y_data[,,i]*y_data[,,i]))^0.5)
+}
+
+y_data <- y_data[1,,]+y_data[2,,]*(0+1i) ## represent each point by a complex vector
+
+l2_geodesic <- geo_reg('kendall',x_data, y_data, 'l2')
+l1_geodesic <- geo_reg('kendall',x_data, y_data, 'l1')
+tukey_geodesic <- geo_reg('kendall',x_data, y_data, 'tukey', are_nr('tukey', dim, 10))
+
+
+
+
+
+
+
+
+total_var <- error_sum('kendall', intrinsic_location('kendall', y_data, 'l2'), as.matrix(numeric(boundary_points)), as.matrix(numeric(length(ages))), y_data, 'l2')
+unexp_var <- error_sum('kendall', l2_geodesic$p, l2_geodesic$V, x_data,y_data,'l2')
+r_sq <- 1-unexp_var/total_var
+
+r_sq
+
+ans[[1]]
+t(ans[[2]])
+sum(ans[[1]]*Conj(ans[[2]]))
+norm(ans[[1]])
+sum(ans[[1]])
+sum(ans[[2]])
+ans[[3]]
+ans[[4]]
+ans[[5]]
+
+```

@@ -1,0 +1,683 @@
+library(zipfR)
+library(MASS)
+
+## finding c for Huber,Tukey, and L_1 efficiency
+
+Q <- function(s, x) {
+  return (Rgamma(s, x, lower = F))
+}
+
+Qinv <- function(s, x) {
+  return (Rgamma.inv(s, x, lower = F))
+}
+
+P <- function(s, x) {
+  return (Rgamma(s, x, lower = T))
+}
+
+Pinv <- function(s, x) {
+  return (Rgamma.inv(s, x, lower = T))
+}
+
+uppergamma <- function(s, x) {
+  return (Igamma(s, x, lower = F))
+}
+
+lowergamma <- function(s, x) {
+  return (Igamma(s, x, lower = T))
+}
+
+are <- function(m_estimator, k, c = NULL) {
+  if (((m_estimator == 'huber') | (m_estimator == 'tukey')) & is.null(c)) {
+    stop('a c value must be provided if the chosen m-estimator is huber or tukey')
+  }
+  if (!is.null(c)) {
+    if ((m_estimator == 'l2') | (m_estimator == 'l1')) {
+      stop('l2 and l1 do not require a c value')
+    }
+    if (c < 0) {
+      stop('c cannot be negative')
+    }
+  }
+  if ((k%%1 != 0) | (k < 1)) {
+    stop('k must be a positive integer')
+  }
+  if (m_estimator == 'l2') {
+    result <- 1
+  } else if (m_estimator == 'l1') {
+    result <- ((gamma((k+1)/2))^2)/((gamma(k/2)*gamma((k+2)/2)))
+  } else if (m_estimator == 'huber') {
+    if (k == 1) {
+      numfactor <- (k/2)*lowergamma(k/2,0.5*c^2)
+    } else {
+      numfactor <- (k/2)*lowergamma(k/2,0.5*c^2)+c*(k-1)*(2^-1.5)*uppergamma((k-1)/2,0.5*c^2)
+    }
+    denfactor <- lowergamma((k+2)/2,0.5*c^2)+(0.5*c^2)*uppergamma(k/2,0.5*c^2)
+    result <- (numfactor^2)/(gamma((k+2)/2)*denfactor)
+  } else if (m_estimator == 'tukey') {
+    numfactor <- (2*(k+4)/(c^4))*lowergamma((k+4)/2,0.5*c^2)-(2*(k+2)/(c^2))*lowergamma((k+2)/2,0.5*c^2)+(k/2)*lowergamma(k/2,0.5*c^2)
+    denfactor <- lowergamma((k+2)/2,0.5*c^2)-(8/(c^2))*lowergamma((k+4)/2,0.5*c^2)+(24/(c^4))*lowergamma((k+6)/2,0.5*c^2)-(32/(c^6))*lowergamma((k+8)/2,0.5*c^2)+(16/(c^8))*lowergamma((k+10)/2,0.5*c^2)
+    result <- (numfactor^2)/(gamma((k+2)/2)*denfactor)
+  } else {
+    stop('the M-estimator must be one of l2, l1, huber, or tukey')
+  }
+  return (result)
+}
+
+deriv <- function(m_estimator, k, c) {
+  if (c < 0) {
+    stop('c cannot be negative.')
+  }
+  if ((k%%1 != 0) | (k < 1)) {
+    stop('k must be a positive integer')
+  }
+  if (m_estimator == 'huber') {
+    if (k == 1) {
+      factor1 <- (k/2)*lowergamma(k/2,0.5*c^2)
+      factor3 <- (c^(k-1))*(2^(-k/2))*exp(-0.5*c^2)
+    } else {
+      factor1 <- (k/2)*lowergamma(k/2,0.5*c^2)+c*(k-1)*(2^-1.5)*uppergamma((k-1)/2,0.5*c^2)
+      factor3 <- (c^(k-1))*(2^(-k/2))*exp(-0.5*c^2)+(k-1)*(2^-1.5)*uppergamma((k-1)/2,0.5*c^2)
+    }
+    factor2 <- lowergamma((k+2)/2,0.5*c^2)+(0.5*c^2)*uppergamma(k/2,0.5*c^2)
+    factor4 <- c*uppergamma(k/2,0.5*c^2)
+  } else if (m_estimator == 'tukey') {
+    factor1 <- (2*(k+4)/(c^4))*lowergamma((k+4)/2,0.5*c^2)-(2*(k+2)/(c^2))*lowergamma((k+2)/2,0.5*c^2)+(k/2)*lowergamma(k/2,0.5*c^2)
+    factor2 <- lowergamma((k+2)/2,0.5*c^2)-(8/(c^2))*lowergamma((k+4)/2,0.5*c^2)+(24/(c^4))*lowergamma((k+6)/2,0.5*c^2)-(32/(c^6))*lowergamma((k+8)/2,0.5*c^2)+(16/(c^8))*lowergamma((k+10)/2,0.5*c^2)
+    factor3 <- -(8*(k+4)/(c^5))*lowergamma((k+4)/2,0.5*c^2)+(4*(k+2)/(c^3))*lowergamma((k+2)/2,0.5*c^2)-c^(k-1)*2^(-((k-2)/2))*exp(-0.5*c^2)
+    factor4 <- (16/(c^3))*lowergamma((k+4)/2,0.5*c^2)-(96/(c^5))*lowergamma((k+6)/2,0.5*c^2)+(192/(c^7))*lowergamma((k+8)/2,0.5*c^2)-(128/(c^9))*lowergamma((k+10)/2,0.5*c^2)
+  } else {
+    stop('the M-estimator must be one of huber or tukey')
+  }
+  numerator <- 2*factor1*factor3*factor2-(factor1^2)*factor4
+  denominator <- (gamma((k+2)/2))*factor2^2
+  result <- numerator/denominator
+  return (result)
+}
+
+#Newton Raphson
+
+areNR <- function(m_estimator, k, startingpoint, level = 0.95) {
+  if (m_estimator == 'huber') {
+    if (level <= efficiency('l1', k)) {
+      stop('the are of the L1 estimator is greater than the proposed are level')
+    }
+  }
+  if  ((level >= 1) | (level <= 0)) {
+    stop('the proposed are level is invalid')
+  }
+  if (startingpoint < 0) {
+    stop('the starting point cannot be negative')
+  }
+  old_c <- startingpoint+5
+  new_c <- startingpoint
+  count <- 0
+  while (abs(new_c-old_c) > 0.0000001) {
+    old_c <- new_c
+    new_c <- old_c-(are(m_estimator, k, old_c)-level)/deriv(m_estimator, k, old_c)
+    if (new_c < 0) {
+      stop('try again with a new starting point; consider using a graph of the are function to pick a good starting point')
+    }
+    count <- count+1
+    if (count > 1000) {
+      stop('try again with a new starting point; consider using a graph of the are function to pick a good starting point')
+    }
+  }
+  return (new_c)
+}
+
+## k-sphere embedded in R(k+1)
+
+ip <- function(v1, v2) {
+  if (length(v1) != length(v2)) {
+    stop('v1 and v2 must have the same length')
+  }
+  sum(v1*Conj(v2))
+}
+
+norm <- function(v) {abs(sqrt(ip(v, v)))}
+
+expo <- function(manifold, p, v) {
+  if (length(p) != length(v)) {
+    stop('p and v must have the same length')
+  }
+  if (manifold == 'euclidean') {
+    result <- p+v
+  } else if (manifold == 'sphere') {
+    normp <- norm(p)
+    if (abs((normp-1)) > 0.0000001) {
+      stop('p must be a unit vector')
+    }
+    if (abs(ip(p, v)) > 0.0000001) {
+      stop('v must be tangent to p')
+    }
+    p <- p/normp
+    theta <- norm(v)
+    if (theta == 0) {
+      result <- p
+    } else {
+      e1 <- p
+      e2 <- v/theta
+      result <- cos(theta)*e1 + sin(theta)*e2
+    }
+  } else if (manifold == 'kendall') {
+    if (abs((norm(p)-1)) > 0.0000001) {
+      stop('p must be a unit vector')
+    }
+    if (abs(ip(p, v)) > 0.0000001) {
+      stop('v must be tangent to p')
+    }
+    if ((norm(mean(p)) > 0.0000001) | (norm(mean(v)) > 0.0000001)) {
+      stop('p and v must be centered')
+    }
+    p <- (p-mean(p))/norm(p-mean(p))
+    theta <- norm(v)
+    if (theta == 0) {
+      result <- p
+    } else {
+      e1 <- p
+      e2 <- v/theta
+      result <- cos(theta)*e1 + sin(theta)*e2
+    }
+  } else {
+    stop('the manifold must be one of euclidean, sphere, or kendall')
+  }
+  return (result)
+}
+
+loga <- function(manifold, p1, p2) {
+  embed <- length(p1)
+  if (embed != length(p2)) {
+    stop('p1 and p2 must have the same length')
+  }
+  if (manifold == 'euclidean') {
+    result <- p2-p1
+  } else if (manifold == 'sphere') {
+    normp1 <- norm(p1)
+    normp2 <- norm(p2)
+    if ((abs((normp1-1)) > 0.0000001) | (abs((normp2-1)) > 0.0000001)) {
+      stop('p1 and p2 must be unit vectors')
+    }
+    p1 <- p1/normp1
+    p2 <- p2/normp2
+    if (norm(p1-p2) == 0) {
+      result <- integer(embed)
+    } else {
+      a <- max(min(ip(p1, p2), 1), -1)
+      theta <- acos(a)
+      tang <- p2 - a*p1
+      if (norm(tang) == 0) {
+        if (norm(p1-p2) < 0.000000000001) {
+          result <- integer(embed)
+        }
+      } else {
+        result <- theta*(tang/norm(tang))
+      }
+    }
+  } else if (manifold == 'kendall') {
+    if ((abs((norm(p1)-1)) > 0.0000001) | (abs((norm(p2)-1)) > 0.0000001)) {
+      stop('p1 and p2 must be unit vectors')
+    }
+    if ((norm(mean(p1)) > 0.0000001) | (norm(mean(p2)) > 0.0000001)) {
+      stop('p1 and p2 must be centered')
+    }
+    p1 <- (p1-mean(p1))/norm(p1-mean(p1))
+    p2 <- (p2-mean(p2))/norm(p2-mean(p2))
+    if (norm(p1-p2) == 0) {
+      result <- integer(embed)
+    } else {
+      a <- ip(p1, p2)
+      theta <- acos(max(min(abs(a), 1), -1))
+      tang <- (a/abs(a))*p2 - abs(a)*p1
+      if (norm(tang) == 0) {
+        if (norm(p1-p2) < 0.000000000001) { ### include what if p1 = -p2 ie there is no unique log, not in the domain
+          result <- integer(embed)
+        }
+      } else {
+        result <- theta*(tang/norm(tang))
+      }
+    }
+  } else {
+    stop('the manifold must be one of euclidean, sphere, or kendall')
+  }
+  return (result)
+}
+
+dist <- function(manifold, p1, p2) {
+  return (norm(loga(manifold, p1, p2)))
+}
+
+pt <- function(manifold, p1, p2, v) {
+  if ((length(p1) != length(p2)) | (length(p1) != length(v))) {
+    stop('p1, p2, and v must have the same length')
+  }
+  if (manifold == 'euclidean') {
+    result <- v
+  } else if (manifold == 'sphere') {
+    if (abs(ip(p1, v)) > 0.0000001) {
+      stop('v must be tangent to p1')
+    }
+    p1 <- p1/norm(p1)
+    w <- loga(manifold, p1, p2)
+    if (norm(w) == 0) {
+      result <- v
+    } else {
+      e1 <- p1
+      e2 <- w/norm(w)
+      a <- ip(v, e2)
+      invar <- v-a*e2
+      t <- norm(w)
+      result <- a*(cos(t)*e2-sin(t)*e1)+invar
+    }
+  } else  if (manifold == 'kendall') {
+    if ((abs((norm(p2)-1)) > 0.0000001) | (norm(mean(p2)) > 0.0000001)) {
+      stop('p2 must be a centered unit vector')
+    }
+    p1 <- (p1-mean(p1))/norm(p1-mean(p1))
+    p2 <- (p2-mean(p2))/norm(p2-mean(p2))
+    yi <- expo(manifold, p1, v)
+    a <- ip(p1, p2)
+    p2 <- (a/abs(a))*p2 #p2 is now p2star
+    if (abs(a) >= 1) {
+      result <- loga(manifold, p2, yi)
+    } else {
+      b <- (1-(abs(a))^2)^0.5
+      p2tilda <- (p2-abs(a)*p1)/b
+      result <- v-(ip(v, p1))*p1-(ip(v, p2tilda))*p2tilda+((abs(a))*(ip(v, p1))-b*(ip(v, p2tilda)))*p1+(b*(ip(v, p1))+(abs(a))*(ip(v, p2tilda)))*p2tilda
+      result <- (Conj(a/abs(a)))*result
+    }
+  } else {
+    stop('the manifold must be one of euclidean, sphere, or kendall')
+  }
+  return (result)
+}
+
+rho <- function(x, m_estimator, cutoff = NULL) {
+  if (((m_estimator == 'huber') | (m_estimator == 'tukey')) & is.null(cutoff)) {
+    stop('a cutoff value must be provided if the chosen m-estimator is huber or tukey')
+  }
+  if (!is.null(cutoff)) {
+    if ((m_estimator == 'l2') | (m_estimator == 'l1')) {
+      stop('l2 and l1 do not require a cutoff value')
+    }
+    if (cutoff < 0) {
+      stop('the cutoff value cannot be negative')
+    }
+  }
+  if (m_estimator == 'l2') {
+    result <- 0.5*x^2
+  } else if (m_estimator == 'l1') {
+    result <- abs(x)
+  } else if (m_estimator == 'huber') {
+    if (abs(x) < cutoff) {
+      result <- 0.5*x^2
+    } else {
+      result <- cutoff*abs(x)-0.5*cutoff^2
+    }
+  } else if (m_estimator == 'tukey') {
+    if (abs(x) < cutoff) {
+      result <- ((cutoff^2)/6)*(1-(1-(x/cutoff)^2)^3)
+    } else {
+      result <- (cutoff^2)/6
+    }
+  } else {
+    stop('the M-estimator must be one of l2, l1, huber, or tukey')
+  }
+  return (result)
+}
+
+rhoprime <- function(x, m_estimator, cutoff = NULL) {
+  if (((m_estimator == 'huber') | (m_estimator == 'tukey')) & is.null(cutoff)) {
+    stop('a cutoff value must be provided if the chosen m-estimator is huber or tukey')
+  }
+  if (!is.null(cutoff)) {
+    if ((m_estimator == 'l2') | (m_estimator == 'l1')) {
+      stop('l2 and l1 do not require a cutoff value')
+    }
+    if (cutoff < 0) {
+      stop('the cutoff value cannot be negative')
+    }
+  }
+  if (m_estimator == 'l2') {
+    result <- x
+  } else if (m_estimator == 'l1') {
+    result <- sign(x)
+  } else if (m_estimator == 'huber') {
+    if (abs(x) < cutoff) {
+      result <- x
+    } else {
+      result <- cutoff*sign(x)
+    }
+  } else if (m_estimator == 'tukey') {
+    if (abs(x) < cutoff) {
+      result <- x*((1-(x/cutoff)^2)^2)*sign(x)
+    } else {
+      result <- 0
+    }
+  } else {
+    stop('the M-estimator must be one of l2, l1, huber, or tukey')
+  }
+  return (result)
+}
+
+isonmanifold <- function(manifold, y) {
+  if (manifold == 'euclidean') {
+    result <- TRUE
+  } else if (manifold == 'sphere') {
+    samplesize <- dim(y)[2]
+    norms <- vector(length = samplesize)
+    for (i in 1:samplesize) {
+      norms[i] <- norm(y[, i])
+    }
+    if (any((norms-1) > 0.0000001)) {
+      result <- FALSE
+    } else {
+      result <- TRUE
+    }
+  } else if (manifold == 'kendall') {
+    samplesize <- dim(y)[2]
+    norms <- vector(length = samplesize)
+    for (i in 1:samplesize) {
+      norms[i] <- norm(y[, i])
+    }
+    means <- colMeans(y)
+    if ((any((norms-1) > 0.0000001)) | any(abs(means) > 0.0000001)) {
+      result <- FALSE
+    } else {
+      result <- TRUE
+    }
+  } else {
+    stop('the manifold must be one of euclidean, sphere, or kendall')
+  }
+  return (result)
+}
+
+eps <- function(manifold, p, V, x, y) {
+  embed <- length(p)
+  samplesize <- dim(y)[2]
+  if (dim(y)[1] != embed) {
+    stop('p and each data point in y must have the same length')
+  }
+  if (dim(x)[1] != samplesize) {
+    stop('the sample sizes according to x and y do not match')
+  }
+  if (isonmanifold(manifold, y) == FALSE) {
+    stop('all data points in y must lie on the manifold')
+  }
+  result <- matrix(, nrow = embed, ncol = samplesize)
+  shifts <- V%*%t(x)
+  for (i in 1:samplesize) {
+    result[, i] <-loga(manifold, expo(manifold, p, shifts[, i]), y[, i])
+  }
+  return (result)
+}
+
+errorsum <- function(manifold, p, V, x, y, m_estimator, cutoff = NULL) {
+  sum <- 0
+  res <- eps(manifold, p, V, x, y)
+  for (i in 1:dim(y)[2]) {
+    sum <- sum + rho(norm(res[, i]), m_estimator, cutoff)
+  }
+  return (sum)
+}
+
+jacobi <- function(manifold, p, v1, v2) {
+  if ((length(p) != length(v1)) | (length(v1) != length(v2))) {
+    stop('p, v1, and v2 must have the same length')
+  }
+  result <- vector("list")
+  if (manifold == 'euclidean') {
+    result$p <- v2
+    result$V <- v2 ################################################################
+  } else if (manifold == 'sphere') {
+    if (norm(v1) != 0) {
+      v2_0 <- pt(manifold, expo(manifold, p, v1), p, v2)
+      v2_tan <- (ip(v2_0, (v1/norm(v1))))*(v1/norm(v1))
+      v2_orth <- v2_0-v2_tan
+      L <- norm(v1)
+      result$p <- cos(L)*v2_orth + v2_tan
+      result$V <- ((sin(L))/L)*v2_orth + v2_tan
+    } else {
+      result$p <- v2
+      result$V <- v2
+    }
+  } else if (manifold == 'kendall') {
+    if (norm(v1) != 0) {
+      j <- (0+1i)*v1
+      v2_0 <- pt(manifold, expo(manifold, p, v1), p, v2)
+      w_0 <- (Re(ip(v2_0, (j/norm(j)))))*(j/norm(j))
+      u_0 <- v2_0-w_0
+      w_tan <- (Re(ip(w_0, (v1/norm(v1)))))*(v1/norm(v1))
+      w_orth <- w_0-w_tan
+      u_tan <- (Re(ip(u_0, (v1/norm(v1)))))*(v1/norm(v1))
+      u_orth <- u_0-u_tan
+      L <- norm(v1)
+      result$p <- cos(L)*u_orth + cos(2*L)*w_orth + u_tan + w_tan
+      result$V <- ((sin(L))/L)*u_orth + ((sin(2*L))/(2*L))*w_orth + u_tan + w_tan
+    } else {
+      result$p <- v2
+      result$V <- v2
+    }
+  }
+  return (result)
+}
+
+grad <- function(manifold, p, V, x, y, m_estimator, cutoff = NULL) {
+  result <- vector("list")
+  result$p <- integer(length(p))
+  result$V <- matrix(0L, nrow = length(p), ncol = dim(x)[2])
+  res <- eps(manifold, p, V, x, y)
+  if (dim(x)[2] == 1) {
+    for (i in 1:dim(y)[2]) {
+      if (norm(res[, i]) != 0) {
+        multiplier <- rhoprime(norm(res[, i]), m_estimator, cutoff)
+        jf <- jacobi(manifold, p, x[i]*as.vector(V), (res[, i]/norm(res[, i])))
+        result$p <- result$p - multiplier*jf$p
+        result$V <- result$V - x[i]*multiplier*jf$V
+      }
+    }
+  } else {
+    shifts <- V%*%t(x)
+    for (i in 1:dim(y)[2]) {
+      if (norm(res[, i]) != 0) {
+        multiplier <- rhoprime(norm(res[, i]), m_estimator, cutoff)
+        approxjf <- pt(manifold, expo(p, shifts[, i]), p, (res[, i]/norm(res[, i])))
+        result$p <- result$p - multiplier*approxjf
+        result$V[, h] <- result$V[, h] - x[i, h]*multiplier*approxjf
+      }
+    }
+  }
+  return (result)
+}
+
+gr <- function(manifold, x, y, m_estimator, c = NULL) { ###############include abberant cases eg what if samplesize=2, y1=-y2?
+  if (((m_estimator == 'huber') | (m_estimator == 'tukey')) & is.null(c)) {
+    stop('a c value must be provided if the chosen m-estimator is huber or tukey')
+  }
+  if (!is.null(c)) {
+    if ((m_estimator == 'l2') | (m_estimator == 'l1')) {
+      stop('l2 and l1 do not require a c value')
+    }
+    if (c < 0) {
+      stop('c cannot be negative')
+    }
+  }
+  n <- dim(x)[2]
+  embed <- dim(y)[1]
+  samplesize <- dim(y)[2]
+  current_p <- y[, 1] ## what if y2 = -y1? then go to y2, y3 etc.
+  current_V <- matrix(0L, nrow = embed, ncol = n)
+  old_p <- current_p
+  old_V <- current_V
+  count <- 0
+  alt_count <- 0
+  cutoff <- NULL
+  if ((m_estimator == 'huber') | (m_estimator == 'tukey')) {
+    xi <- (2*Pinv(dim/2, 0.5))^0.5
+    deviations <- vector(length = samplesize)
+    current_shifts <- current_V%*%t(x)
+    for (i in 1:dim(y)[2]) {
+      deviations[i] <- dist(manifold, expo(manifold, current_p, current_shifts[, i]), y[, i])
+    }
+    mad <- median(deviations)
+    sigma <- mad/xi
+    cutoff <- c*sigma
+  }
+  step <- grad(manifold, current_p, current_V, x, y, m_estimator, cutoff)
+  V_diffs <- vector(length = n)
+  for (h in 1:n) {
+    V_diffs[h] <- norm((pt(manifold, old_p, current_p, old_V[, h])-current_V[, h]))
+  }
+  lambda <- min((1/norm(step$p)), 0.1)
+  while ((count == 0) | ((count < 20000) & (alt_count < 100000) & ((dist(manifold, old_p,  current_p) > 0.0000001) | (any(V_diffs > 0.0000001))))) {
+    new_p <- expo(manifold, current_p, -lambda*step$p)
+    new_V <- matrix(, nrow = embed, ncol = n)
+    for (h in 1:n) {
+      new_V[, h] <- pt(manifold, current_p, new_p, current_V[, h]-lambda*step$V[, h])
+    }
+    if (errorsum(manifold, current_p, current_V, x, y, m_estimator, cutoff) >= errorsum(manifold, new_p, new_V, x, y, m_estimator, cutoff)) {
+      alt_count <- 0
+      old_p <- current_p
+      old_V <- current_V
+      current_p <- new_p
+      current_V <- new_V
+      if ((m_estimator == 'huber') | (m_estimator == 'tukey')) {
+        current_shifts <- current_V%*%t(x)
+        for (i in 1:samplesize) {
+          deviations[i] <- dist(manifold, expo(manifold, current_p, current_shifts[, i]), y[, i])
+        }
+        mad <- median(deviations)
+        sigma <- mad/xi
+        cutoff <- c*sigma
+      }
+      step <- grad(manifold, current_p, current_V, x, y, m_estimator, cutoff)
+      for (h in 1:n) {
+        V_diffs[h] <- norm((pt(manifold, old_p, current_p, old_V[, h])-current_V[, h]))
+      }
+      lambda <- min((1/norm(step$p)), 2*lambda)
+      count <- count+1
+    } else {
+      lambda <- lambda/2
+      alt_count <- alt_count+1
+    }
+  }
+  result <- vector("list")
+  result$p <- current_p
+  result$V <- current_V
+  return (result)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+library(mvtnorm)
+library(MASS)
+
+## initializations
+
+set.seed(234234)
+
+dim <- 2
+#dim <- 3
+embed <- dim+1
+L <- 100
+n <- 1
+#n <- 2
+max <- 8
+estimator <- 'l2'
+#estimator <- 'l1'
+#estimator <- 'huber'
+#estimator <- 'tukey'
+manifold <- 'sphere'
+true_p <- integer(embed)
+true_p[1] <- 1
+true_v <- matrix(0L,nrow=embed,ncol=n)
+true_v[2,1] <- pi/4
+true_v[embed,2] <- -pi/6
+sigma <- pi/8
+t_sigma <- pi/16
+mixed_sigma_1 <- pi/6
+mixed_sigma_2 <- pi/24
+
+# data
+
+graph_p <- integer(max-1) # used to store MSE(p)s
+graph_v <- matrix(0L,nrow=(max-1),ncol=n) # used to store MSE(v^j)s
+
+t_graph_p <- integer(max-1)
+t_graph_v <- matrix(0L,nrow=(max-1),ncol=n)
+
+mixed_graph_p <- integer(max-1)
+mixed_graph_v <- matrix(0L,nrow=(max-1),ncol=n)
+
+for (k in 2:max) {
+  mse_p <- 0
+  mse_v <- integer(n)
+  t_mse_p <- 0
+  t_mse_v <- integer(n)
+  mixed_mse_p <- 0
+  mixed_mse_v <- integer(n)
+  for (j in 1:L) {
+    train_x <- matrix(runif(n*(2^max)),ncol=n)-0.5
+    train_y <- matrix(,nrow=embed,ncol=2^max)
+    t_train_y <- matrix(,nrow=embed,ncol=2^max)
+    mixed_train_y <- matrix(,nrow=embed,ncol=2^max)
+    train_sims <- matrix(MASS::mvrnorm(n=2^max, mu=integer(dim), Sigma=diag(x=sigma^2, nrow=dim)),nrow=2^max)
+    t_train_sims <- matrix(rmvt(2^max,sigma=diag(x=t_sigma^2,nrow=dim),df=3,delta=integer(dim),type="shifted"),nrow=2^max)
+    bern <- rbinom(2^max,1,0.9)
+    mixed_train_sims <- (1-bern)*matrix(MASS::mvrnorm(n=2^max, mu=integer(dim), Sigma=diag(x=mixed_sigma_1^2, nrow=dim)),nrow=2^max)+bern*matrix(MASS::mvrnorm(n=2^max, mu=integer(dim), Sigma=diag(x=mixed_sigma_2^2, nrow=dim)),nrow=2^max)
+    true_shifts <- true_v%*%t(train_x)
+    for (i in 1:2^max) {
+      train_error <- pt(manifold,true_p,expo(manifold,true_p,true_shifts[,i]),c(0,train_sims[i,]))
+      train_y[,i] <- expo(manifold,expo(manifold,true_p,true_shifts[,i]),train_error)
+      t_train_error <- pt(manifold,true_p,expo(manifold,true_p,true_shifts[,i]),c(0,t_train_sims[i,]))
+      t_train_y[,i] <- expo(manifold,expo(manifold,true_p,true_shifts[,i]),t_train_error)
+      mixed_train_error <- pt(manifold,true_p,expo(manifold,true_p,true_shifts[,i]),c(0,mixed_train_sims[i,]))
+      mixed_train_y[,i] <- expo(manifold,expo(manifold,true_p,true_shifts[,i]),mixed_train_error)
+    }
+    train_x <- t(t(train_x[1:2^k,]))
+    train_y <- train_y[,1:2^k]
+    t_train_y <- t_train_y[,1:2^k]
+    mixed_train_y <- mixed_train_y[,1:2^k]
+    ans <- gr(manifold,train_x,train_y,estimator)
+    t_ans <- gr(manifold,train_x,t_train_y,estimator)
+    mixed_ans <- gr(manifold,train_x,mixed_train_y,estimator)
+    mse_p <- mse_p + (dist(manifold,ans[[1]],true_p))^2
+    for (h in 1:length(train_x[1,])) {
+      mse_v[h] <- mse_v[h] + (norm(pt(manifold,ans[[1]],true_p,ans[[2]][,h])-true_v[,h]))^2
+    }
+    t_mse_p <- t_mse_p + (dist(manifold,t_ans[[1]],true_p))^2
+    for (h in 1:length(train_x[1,])) {
+      t_mse_v[h] <- t_mse_v[h] + (norm(pt(manifold,t_ans[[1]],true_p,t_ans[[2]][,h])-true_v[,h]))^2
+    }
+    mixed_mse_p <- mixed_mse_p + (dist(manifold,mixed_ans[[1]],true_p))^2
+    for (h in 1:length(train_x[1,])) {
+      mixed_mse_v[h] <- mixed_mse_v[h] + (norm(pt(manifold,mixed_ans[[1]],true_p,mixed_ans[[2]][,h])-true_v[,h]))^2
+    }
+  }
+  mse_p <- mse_p/L
+  mse_v <- mse_v/L
+  t_mse_p <- t_mse_p/L
+  t_mse_v <- t_mse_v/L
+  mixed_mse_p <- mixed_mse_p/L
+  mixed_mse_v <- mixed_mse_v/L
+  graph_p[k-1] <- mse_p
+  graph_v[k-1,] <- mse_v
+  t_graph_p[k-1] <- t_mse_p
+  t_graph_v[k-1,] <- t_mse_v
+  mixed_graph_p[k-1] <- mixed_mse_p
+  mixed_graph_v[k-1,] <- mixed_mse_v
+}
